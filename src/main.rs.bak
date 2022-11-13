@@ -19,7 +19,9 @@ use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::*;
 
-#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [])]
+use dwt_systick_monotonic::fugit::Duration;
+
+#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1])]
 mod app {
     use hal::Spim;
     use st7789::ST7789;
@@ -31,7 +33,7 @@ mod app {
 
     #[local]
     struct Local {
-        // led:
+        led: hal::gpio::p0::P0_10<hal::gpio::Output<hal::gpio::PushPull>>,
         state: bool,
     }
 
@@ -149,7 +151,7 @@ mod app {
             cx.local.led.set_low().unwrap();
             *cx.local.state = true;
         }
-        blink::spawn_after(Duration::<u64, 1, 1000>::from_ticks(1000)).unwrap();
+        blink::spawn_after(Duration::<u32, 1, 64000000>::from_ticks(1000)).unwrap();
     }
 
     #[idle]
@@ -159,73 +161,3 @@ mod app {
         }
     }
 }
-
-// extern crate alloc;
-// extern crate no_std_compat as std;
-// use panic_halt as _;
-
-// use cortex_m::asm;
-// use nrf52840_hal as hal;
-
-// #[rtic::app(device = hal::pac, peripherals = true, dispatchers = [SWI0_EGU0, SWI1_EGU1, SWI2_EGU2, SWI3_EGU3, SWI4_EGU4])]
-// mod app {
-//     use crate::*;
-
-//     use cortex_m_semihosting::{debug, hprintln};
-
-//     #[shared]
-//     struct Shared {}
-
-//     #[local]
-//     struct Local {}
-
-//     #[init(local = [x: u32 = 0])]
-//     fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
-//         // Cortex-M peripherals
-//         let _core: cortex_m::Peripherals = cx.core;
-
-//         // Device specific peripherals
-//         let _device: lm3s6965::Peripherals = cx.device;
-
-//         // Locals in `init` have 'static lifetime
-//         let _x: &'static mut u32 = cx.local.x;
-
-//         // Access to the critical section token,
-//         // to indicate that this is a critical seciton
-//         let _cs_token: bare_metal::CriticalSection = cx.cs;
-
-//         hprintln!("init").unwrap();
-
-//         debug::exit(debug::EXIT_SUCCESS); // Exit QEMU simulator
-
-//         (Shared {}, Local {}, init::Monotonics())
-//     }
-
-//     // #[monotonic(binds = TIMER1, default = true)]
-//     // type MyMono = MonoTimer<TIMER1>;
-
-//     // #[shared]
-//     // struct Shared {
-//     //     usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
-//     //     serial: MyUsbSerial,
-//     //     radio: ieee802154::Radio<'static>,
-//     //     #[lock_free]
-//     //     led1: Pin<Output<PushPull>>,
-//     //     #[lock_free]
-//     //     led1_on: bool,
-//     //     led2: Pin<Output<PushPull>>,
-//     //     led2_on: bool,
-//     //     led3: Pin<Output<PushPull>>,
-//     //     led3_on: bool,
-//     //     led4: Pin<Output<PushPull>>,
-//     //     led4_on: bool,
-//     // }
-
-//     // #[local]
-//     // struct Local {
-//     //     wdh0: wdt::WatchdogHandle<wdt::handles::Hdl0>,
-//     // }
-
-//     // #[init]
-//     // fn init(ctx: init::Context) -> (Shared, Local, init::Monotonics) {}
-// }
