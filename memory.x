@@ -1,10 +1,18 @@
 MEMORY
 {
-  /* NOTE 1 K = 1 KiBi = 1024 bytes */
-  /* TODO Adjust these memory regions to match your device memory layout */
-  /* These values correspond to the LM3S6965, one of the few devices QEMU can emulate */
-  FLASH : ORIGIN = 0x00000000, LENGTH = 256K
-  RAM : ORIGIN = 0x20000000, LENGTH = 64K
+
+  # XXX ripped off from adafruit arduino clue board support
+  FLASH (rx)     : ORIGIN = 0x26000, LENGTH = 0xED000 - 0x26000
+
+  /* SRAM required by Softdevice depend on
+   * - Attribute Table Size (Number of Services and Characteristics)
+   * - Vendor UUID count
+   * - Max ATT MTU
+   * - Concurrent connection peripheral + central + secure links
+   * - Event Len, HVN queue, Write CMD queue
+   */ 
+  RAM (rwx) :  ORIGIN = 0x20006000, LENGTH = 0x20040000 - 0x20006000
+
 }
 
 /* This is where the call stack will be allocated. */
