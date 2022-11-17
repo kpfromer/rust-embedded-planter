@@ -17,7 +17,8 @@ use hal::gpio::PushPull;
 use hal::pac::SPIM0;
 use hal::Spim;
 
-use heapless::Vec;
+use heapless::{String, Vec};
+
 use nrf52840_hal as _;
 
 use prelude::AppError;
@@ -46,6 +47,10 @@ use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 use nrf52840_hal::clocks::{ExternalOscillator, Internal, LfOscStopped};
 use nrf52840_hal::Clocks;
+
+use embedded_graphics::mono_font::ascii::FONT_10X20;
+
+use core::fmt::Write;
 
 type Display = ST7789<
     SPIInterfaceNoCS<Spim<SPIM0>, P0_13<Output<PushPull>>>,
@@ -106,7 +111,7 @@ fn read_line<'a>(
 
 #[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3])]
 mod app {
-    use hal::Timer;
+    use hal::{spi::write_iter, Timer};
 
     use super::*;
 
@@ -209,7 +214,7 @@ mod app {
             .build();
 
         // blink::spawn_after(1.secs()).unwrap();
-        render::spawn_after(2.secs()).unwrap();
+        // render::spawn_after(2.secs()).unwrap();
 
         (
             Shared {},
@@ -236,14 +241,14 @@ mod app {
     //     blink::spawn_after(2.secs()).unwrap();
     // }
 
-    #[task(local = [display])]
-    fn render(cx: render::Context) {
-        let circle = Circle::new(Point::new(128, 64), 64)
-            .into_styled(PrimitiveStyle::with_fill(Rgb565::RED));
-        circle.draw(cx.local.display).unwrap();
-    }
+    // #[task(local = [display])]
+    // fn render(cx: render::Context) {
+    //     let circle = Circle::new(Point::new(128, 64), 64)
+    //         .into_styled(PrimitiveStyle::with_fill(Rgb565::RED));
+    //     circle.draw(cx.local.display).unwrap();
+    // }
 
-    #[idle(local = [usb_dev, serial, white_led])]
+    #[idle(local = [usb_dev, serial, white_led, display])]
     fn idle(cx: idle::Context) -> ! {
         let usb_dev = cx.local.usb_dev;
         let serial = cx.local.serial;
@@ -255,15 +260,34 @@ mod app {
                 chars.clear();
             }
 
-            if chars.len() == 2 && chars[0] == b'o' && chars[1] == b'n' {
+            if &chars[..] == b"on" {
                 cx.local.white_led.on();
-            } else if chars.len() == 3 && chars[0] == b'o' && chars[1] == b'f' && chars[2] == b'f' {
+            } else if &chars[..] == b"off" {
                 cx.local.white_led.off();
             } else {
-                chars.clear();
+                let mut string: String<64> = String::new();
+                chars
+                    .iter()
+                    .for_each(|value| string.push(*value as char).unwrap());
+
+                cx.local.display.clear(Rgb565::BLACK).unwrap();
+
+                let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
+                    .font(&FONT_10X20)
+                    .text_color(Rgb565::WHITE)
+                    .build();
+
+                embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
+                    .draw(cx.local.display)
+                    .unwrap();
             }
+
+            chars.clear();
         }
     }
+
+    // #[task]
+    // fn render_text(cx: render_text::Context) {}
 
     // TODO: interrupt on usb
     // https://github.com/Jarrod-Bennett/rust-nrf52-bluetooth/blob/cda7d9cb181e3dbf6e3afb1c27427a0ece20cbb0/src/main.rs
