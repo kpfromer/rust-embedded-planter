@@ -1,1 +1,0 @@
-cargo build --release && rsync target/thumbv7em-none-eabihf/release/planter-basic pi@192.168.0.179:/home/pi/bin
