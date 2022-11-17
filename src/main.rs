@@ -1,6 +1,13 @@
 #![no_main]
 #![no_std]
 
+pub mod error;
+// pub mod usb_serial;
+
+pub mod prelude {
+    pub use crate::error::*;
+}
+
 use hal::gpio::p0::P0_13;
 use hal::gpio::p1::P1_03;
 use hal::gpio::p1::P1_05;
@@ -9,10 +16,11 @@ use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::pac::SPIM0;
 use hal::Spim;
-// use panic_halt as _;
 
+use heapless::Vec;
 use nrf52840_hal as _;
 
+use prelude::AppError;
 use rtic::app;
 
 use dwt_systick_monotonic::DwtSystick;
@@ -63,6 +71,39 @@ impl Led {
     }
 }
 
+#[inline]
+fn read_line<'a>(
+    usb_dev: &mut UsbDevice<'a, Usbd<UsbPeripheral<'a>>>,
+    serial: &mut SerialPort<'a, Usbd<UsbPeripheral<'a>>>,
+    chars: &mut Vec<u8, 64>,
+) -> Result<(), AppError> {
+    chars.clear();
+
+    loop {
+        if !usb_dev.poll(&mut [serial]) {
+            continue;
+        }
+
+        let mut buf = [0u8; 1];
+
+        match serial.read(&mut buf) {
+            Ok(count) if count > 0 => {
+                // If enter is entered
+                if buf[0] == b'\n' || buf[0] == b'\r' {
+                    break;
+                } else {
+                    chars
+                        .push(buf[0].clone())
+                        .map_err(|_| AppError::UsbSerialError)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
 #[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3])]
 mod app {
     use hal::Timer;
@@ -111,7 +152,7 @@ mod app {
         let port0 = hal::gpio::p0::Parts::new(cx.device.P0);
         let port1 = hal::gpio::p1::Parts::new(cx.device.P1);
 
-        let mut white_led = Led::new(port0.p0_10.degrade());
+        let white_led = Led::new(port0.p0_10.degrade());
 
         let tft_reset = port1.p1_03.into_push_pull_output(Level::Low);
         let tft_backlight = port1.p1_05.into_push_pull_output(Level::Low);
@@ -202,38 +243,25 @@ mod app {
         circle.draw(cx.local.display).unwrap();
     }
 
-    #[idle(local = [usb_dev, serial ])]
+    #[idle(local = [usb_dev, serial, white_led])]
     fn idle(cx: idle::Context) -> ! {
         let usb_dev = cx.local.usb_dev;
         let serial = cx.local.serial;
+        let mut chars: Vec<u8, 64> = Vec::new();
+
         loop {
-            if !usb_dev.poll(&mut [serial]) {
-                continue;
-            }
-            let mut buf = [0u8; 64];
-
-            match serial.read(&mut buf) {
-                Ok(count) if count > 0 => {
-                    // Echo back characters that came in
-                    let mut write_offset = 0;
-                    while write_offset < count {
-                        match serial.write(&buf[write_offset..count]) {
-                            Ok(len) if len > 0 => {
-                                write_offset += len;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
+            // Read line and clear chars if there's an error
+            if let Err(_) = read_line(usb_dev, serial, &mut chars) {
+                chars.clear();
             }
 
-            // match serial.write(&[0x3a, 0x29]) {
-            //     Ok(_count) => {
-            //         // count bytes were written
-            //     }
-            //     _ => {}
-            // };
+            if chars.len() == 2 && chars[0] == b'o' && chars[1] == b'n' {
+                cx.local.white_led.on();
+            } else if chars.len() == 3 && chars[0] == b'o' && chars[1] == b'f' && chars[2] == b'f' {
+                cx.local.white_led.off();
+            } else {
+                chars.clear();
+            }
         }
     }
 
