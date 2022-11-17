@@ -2,6 +2,8 @@
 #![no_std]
 
 pub mod error;
+pub mod led;
+pub mod soil;
 // pub mod usb_serial;
 
 pub mod prelude {
@@ -35,7 +37,6 @@ use nrf52840_hal::prelude::*;
 use display_interface_spi::SPIInterfaceNoCS;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::*;
 
 use st7789::ST7789;
 
@@ -52,29 +53,13 @@ use embedded_graphics::mono_font::ascii::FONT_10X20;
 
 use core::fmt::Write;
 
+use led::Led;
+
 type Display = ST7789<
     SPIInterfaceNoCS<Spim<SPIM0>, P0_13<Output<PushPull>>>,
     P1_03<Output<PushPull>>,
     P1_05<Output<PushPull>>,
 >;
-
-pub struct Led(Pin<Output<PushPull>>);
-
-impl Led {
-    fn new<Mode>(pin: Pin<Mode>) -> Self {
-        Led(pin.into_push_pull_output(Level::Low))
-    }
-
-    /// Turn the LED on
-    pub fn on(&mut self) {
-        self.0.set_high().unwrap()
-    }
-
-    /// Turn the LED off
-    pub fn off(&mut self) {
-        self.0.set_low().unwrap()
-    }
-}
 
 #[inline]
 fn read_line<'a>(
@@ -113,6 +98,8 @@ fn read_line<'a>(
 mod app {
     use hal::{spi::write_iter, Timer};
 
+    use crate::soil::Soil;
+
     use super::*;
 
     #[shared]
@@ -124,6 +111,7 @@ mod app {
         display: Display,
         serial: SerialPort<'static, Usbd<UsbPeripheral<'static>>>,
         usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
+        soil: Soil,
     }
 
     // 64_000_000 matches hal::clocks::HFCLK_FREQ
@@ -158,6 +146,8 @@ mod app {
         let port1 = hal::gpio::p1::Parts::new(cx.device.P1);
 
         let white_led = Led::new(port0.p0_10.degrade());
+
+        let soil = Soil::new(cx.device.SAADC, port0.p0_05);
 
         let tft_reset = port1.p1_03.into_push_pull_output(Level::Low);
         let tft_backlight = port1.p1_05.into_push_pull_output(Level::Low);
@@ -216,6 +206,8 @@ mod app {
         // blink::spawn_after(1.secs()).unwrap();
         // render::spawn_after(2.secs()).unwrap();
 
+        soil_measure::spawn().unwrap();
+
         (
             Shared {},
             Local {
@@ -223,6 +215,7 @@ mod app {
                 display,
                 usb_dev,
                 serial,
+                soil,
             },
             init::Monotonics(monotonic),
         )
@@ -248,7 +241,35 @@ mod app {
     //     circle.draw(cx.local.display).unwrap();
     // }
 
-    #[idle(local = [usb_dev, serial, white_led, display])]
+    #[task(local = [soil, display, string: String<32> = String::new()])]
+    fn soil_measure(cx: soil_measure::Context) {
+        let string = cx.local.string;
+        let soil = cx.local.soil;
+        let display = cx.local.display;
+
+        let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
+            .font(&FONT_10X20)
+            .text_color(Rgb565::WHITE)
+            .background_color(Rgb565::BLACK)
+            .build();
+
+        write!(
+            string,
+            "Soil {}% ",
+            soil.soil_moisture_percentage().unwrap()
+        )
+        .unwrap();
+
+        embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
+            .draw(display)
+            .unwrap();
+
+        string.clear();
+
+        soil_measure::spawn_after(2.secs()).unwrap();
+    }
+
+    #[idle(local = [usb_dev, serial, white_led ])]
     fn idle(cx: idle::Context) -> ! {
         let usb_dev = cx.local.usb_dev;
         let serial = cx.local.serial;
@@ -265,21 +286,21 @@ mod app {
             } else if &chars[..] == b"off" {
                 cx.local.white_led.off();
             } else {
-                let mut string: String<64> = String::new();
-                chars
-                    .iter()
-                    .for_each(|value| string.push(*value as char).unwrap());
+                // let mut string: String<64> = String::new();
+                // chars
+                //     .iter()
+                //     .for_each(|value| string.push(*value as char).unwrap());
 
-                cx.local.display.clear(Rgb565::BLACK).unwrap();
+                // cx.local.display.clear(Rgb565::BLACK).unwrap();
 
-                let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
-                    .font(&FONT_10X20)
-                    .text_color(Rgb565::WHITE)
-                    .build();
+                // let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
+                //     .font(&FONT_10X20)
+                //     .text_color(Rgb565::WHITE)
+                //     .build();
 
-                embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
-                    .draw(cx.local.display)
-                    .unwrap();
+                // embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
+                //     .draw(cx.local.display)
+                //     .unwrap();
             }
 
             chars.clear();

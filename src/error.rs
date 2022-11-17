@@ -8,6 +8,7 @@ pub enum AppError {
     Duh,
     FmtError,
     SDError,
+    SoilReadingError,
     UsbSerialError,
     DisplayError(&'static str),
 }
