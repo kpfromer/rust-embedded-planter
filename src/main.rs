@@ -65,7 +65,7 @@ type Display = ST7789<
 
 const MOISTURE_THRESHOLD: u8 = 50;
 
-#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3, SPIM3])]
+#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3, SPIM3, SPIM2_SPIS2_SPI2])]
 mod app {
 
     use crate::soil::Soil;
@@ -196,31 +196,10 @@ mod app {
         // motor::spawn().unwrap();
     }
 
-    // #[task(local = [motor, state: bool = false], priority = 3)]
-    // fn motor(cx: motor::Context) {
-    //     let on = *cx.local.state;
-    //     if on {
-    //         cx.local.motor.on()
-    //     } else {
-    //         cx.local.motor.off()
-    //     }
-    //     *cx.local.state = !on;
-    // }
-
-    #[task(local = [soil, motor, display, string: String<32> = String::new()])]
-    fn soil_measure(cx: soil_measure::Context) {
+    #[task(local=[display, string: String<32> = String::new()], priority = 4)]
+    fn render(cx: render::Context, soil_moisture: u8) {
         let string = cx.local.string;
-        let soil = cx.local.soil;
-        let motor = cx.local.motor;
         let display = cx.local.display;
-
-        let soil_moisture = soil.soil_moisture_percentage().unwrap();
-
-        if soil_moisture < MOISTURE_THRESHOLD {
-            motor.on();
-        } else {
-            motor.off();
-        }
 
         let style = MonoTextStyleBuilder::new()
             .font(&PROFONT_24_POINT)
@@ -267,8 +246,32 @@ mod app {
         // Image::new(&bmp, Point::new(100, 50)).draw(display).unwrap();
 
         string.clear();
+    }
 
-        soil_measure::spawn_after(500.millis()).unwrap();
+    #[task(local = [motor], priority = 3)]
+    fn motor(cx: motor::Context, on: bool) {
+        if on {
+            cx.local.motor.on();
+            // Turn off motor in .5 seconds
+            motor::spawn_after(500.millis(), false).unwrap();
+        } else {
+            cx.local.motor.off()
+        }
+    }
+
+    #[task(local = [soil])]
+    fn soil_measure(cx: soil_measure::Context) {
+        let soil = cx.local.soil;
+
+        let soil_moisture = soil.soil_moisture_percentage().unwrap();
+
+        // render dipslay
+        render::spawn(soil_moisture).unwrap();
+        // control motor
+        motor::spawn(soil_moisture < MOISTURE_THRESHOLD).unwrap();
+
+        // spawn again in a bit
+        soil_measure::spawn_after(1.secs()).unwrap();
     }
 
     #[idle(local = [usb_serial_device, white_led])]
