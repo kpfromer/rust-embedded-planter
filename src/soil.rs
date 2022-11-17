@@ -16,6 +16,7 @@ pub struct Soil {
 impl Soil {
     pub fn new(saadc: SAADC, pin: P0_05<Disconnected>) -> Soil {
         // set up ADC and analog pin to read
+        // read more here: https://infocenter.nordicsemi.com/index.jsp?topic=%2Fcom.nordic.infocenter.nrf52832.ps.v1.1%2Fsaadc.html
         let adc = Saadc::new(saadc, SaadcConfig::default());
         Soil {
             adc,
@@ -32,6 +33,8 @@ impl Soil {
             .map(|value| (((value as f32 / 16384_f32) * 100_f32) as u8).clamp(0, 100))
             .map_err(|_| AppError::SoilReadingError)
     }
+
+    // TODO: take 10 samples to average?
 
     // fn soil_measure_percentage<const N: usize>(&mut self) -> Result<u8, AppError> {
     //     let mut items = [0_f32; N];

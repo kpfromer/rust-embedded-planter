@@ -14,10 +14,10 @@ use hal::gpio::p0::P0_13;
 use hal::gpio::p1::P1_03;
 use hal::gpio::p1::P1_05;
 use hal::gpio::Output;
-use hal::gpio::Pin;
 use hal::gpio::PushPull;
 use hal::pac::SPIM0;
 use hal::Spim;
+use hal::Timer;
 
 use heapless::{String, Vec};
 
@@ -31,12 +31,15 @@ use dwt_systick_monotonic::ExtU32;
 
 use nrf52840_hal as hal;
 use nrf52840_hal::clocks::HFCLK_FREQ;
+use nrf52840_hal::clocks::{ExternalOscillator, Internal, LfOscStopped};
 use nrf52840_hal::gpio::Level;
-use nrf52840_hal::prelude::*;
+use nrf52840_hal::gpiote::Gpiote;
+use nrf52840_hal::Clocks;
 
 use display_interface_spi::SPIInterfaceNoCS;
 use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
+use embedded_graphics::{image::Image, prelude::*};
+use tinybmp::Bmp;
 
 use st7789::ST7789;
 
@@ -46,10 +49,7 @@ use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
 use usb_device::prelude::UsbDevice;
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-use nrf52840_hal::clocks::{ExternalOscillator, Internal, LfOscStopped};
-use nrf52840_hal::Clocks;
-
-use embedded_graphics::mono_font::ascii::FONT_10X20;
+use profont::PROFONT_24_POINT;
 
 use core::fmt::Write;
 
@@ -82,9 +82,7 @@ fn read_line<'a>(
                 if buf[0] == b'\n' || buf[0] == b'\r' {
                     break;
                 } else {
-                    chars
-                        .push(buf[0].clone())
-                        .map_err(|_| AppError::UsbSerialError)?;
+                    chars.push(buf[0]).map_err(|_| AppError::UsbSerialError)?;
                 }
             }
             _ => {}
@@ -94,9 +92,8 @@ fn read_line<'a>(
     Ok(())
 }
 
-#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3])]
+#[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3, SPIM3])]
 mod app {
-    use hal::{spi::write_iter, Timer};
 
     use crate::soil::Soil;
 
@@ -112,6 +109,8 @@ mod app {
         serial: SerialPort<'static, Usbd<UsbPeripheral<'static>>>,
         usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
         soil: Soil,
+        motor: Led,
+        gpiote: Gpiote,
     }
 
     // 64_000_000 matches hal::clocks::HFCLK_FREQ
@@ -146,8 +145,8 @@ mod app {
         let port1 = hal::gpio::p1::Parts::new(cx.device.P1);
 
         let white_led = Led::new(port0.p0_10.degrade());
-
         let soil = Soil::new(cx.device.SAADC, port0.p0_05);
+        let motor = Led::new(port0.p0_03.degrade());
 
         let tft_reset = port1.p1_03.into_push_pull_output(Level::Low);
         let tft_backlight = port1.p1_05.into_push_pull_output(Level::Low);
@@ -184,7 +183,8 @@ mod app {
         display.init(&mut timer).unwrap();
         // set default orientation
         display
-            .set_orientation(st7789::Orientation::Landscape)
+            .set_orientation(st7789::Orientation::LandscapeSwapped)
+            // .set_orientation(st7789::Orientation::Landscape)
             .unwrap();
         display.clear(Rgb565::BLACK).unwrap();
 
@@ -203,6 +203,12 @@ mod app {
             .max_packet_size_0(64) // (makes control transfers 8x faster)
             .build();
 
+        // GPIO interrupts
+        let btn = port1.p1_02.into_pullup_input().degrade();
+        let gpiote = Gpiote::new(cx.device.GPIOTE);
+        gpiote.port().input_pin(&btn).low();
+        gpiote.port().enable_interrupt();
+
         // blink::spawn_after(1.secs()).unwrap();
         // render::spawn_after(2.secs()).unwrap();
 
@@ -216,6 +222,8 @@ mod app {
                 usb_dev,
                 serial,
                 soil,
+                motor,
+                gpiote,
             },
             init::Monotonics(monotonic),
         )
@@ -241,6 +249,23 @@ mod app {
     //     circle.draw(cx.local.display).unwrap();
     // }
 
+    #[task(binds = GPIOTE, local = [gpiote], priority = 5)]
+    fn on_gpiote(cx: on_gpiote::Context) {
+        cx.local.gpiote.reset_events();
+        motor::spawn().unwrap();
+    }
+
+    #[task(local = [motor, state: bool = false], priority = 3)]
+    fn motor(cx: motor::Context) {
+        let on = *cx.local.state;
+        if on {
+            cx.local.motor.on()
+        } else {
+            cx.local.motor.off()
+        }
+        *cx.local.state = !on;
+    }
+
     #[task(local = [soil, display, string: String<32> = String::new()])]
     fn soil_measure(cx: soil_measure::Context) {
         let string = cx.local.string;
@@ -248,7 +273,7 @@ mod app {
         let display = cx.local.display;
 
         let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
-            .font(&FONT_10X20)
+            .font(&PROFONT_24_POINT)
             .text_color(Rgb565::WHITE)
             .background_color(Rgb565::BLACK)
             .build();
@@ -260,7 +285,7 @@ mod app {
         )
         .unwrap();
 
-        embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
+        embedded_graphics::text::Text::new(string.as_str(), Point::new(100, 50), style)
             .draw(display)
             .unwrap();
 
@@ -269,7 +294,7 @@ mod app {
         soil_measure::spawn_after(2.secs()).unwrap();
     }
 
-    #[idle(local = [usb_dev, serial, white_led ])]
+    #[idle(local = [usb_dev, serial, white_led])]
     fn idle(cx: idle::Context) -> ! {
         let usb_dev = cx.local.usb_dev;
         let serial = cx.local.serial;
@@ -277,7 +302,7 @@ mod app {
 
         loop {
             // Read line and clear chars if there's an error
-            if let Err(_) = read_line(usb_dev, serial, &mut chars) {
+            if read_line(usb_dev, serial, &mut chars).is_err() {
                 chars.clear();
             }
 
