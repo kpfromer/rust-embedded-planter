@@ -17,12 +17,16 @@ dwt-systick-monotonic = "1.1"
 display-interface = "0.4"
 display-interface-spi = "0.4"
 embedded-graphics = "0.7"
+embedded-layout = "0.2.0"
+tinybmp = "0.4.0"
 st7789 = "0.7.0"
 
 usb-device = "0.2.9"
 usbd-serial = "0.1.1"
 
 heapless = "0.7.16"
+
+profont = "0.6.1"
 
 # Uncomment for the panic example.
 # panic-itm = "0.4.1"

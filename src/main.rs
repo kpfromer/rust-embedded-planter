@@ -38,7 +38,11 @@ use nrf52840_hal::Clocks;
 
 use display_interface_spi::SPIInterfaceNoCS;
 use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::{image::Image, prelude::*};
+use embedded_graphics::{
+    image::Image, mono_font::MonoTextStyleBuilder, prelude::*, primitives::Rectangle, text::Text,
+};
+use embedded_layout::layout::linear::LinearLayout;
+use embedded_layout::prelude::*;
 use tinybmp::Bmp;
 
 use st7789::ST7789;
@@ -229,26 +233,6 @@ mod app {
         )
     }
 
-    // #[task(local = [white_led, state: bool = false])]
-    // fn blink(cx: blink::Context) {
-    //     if *cx.local.state {
-    //         cx.local.white_led.on();
-    //         *cx.local.state = false;
-    //     } else {
-    //         cx.local.white_led.off();
-    //         *cx.local.state = true;
-    //     }
-
-    //     blink::spawn_after(2.secs()).unwrap();
-    // }
-
-    // #[task(local = [display])]
-    // fn render(cx: render::Context) {
-    //     let circle = Circle::new(Point::new(128, 64), 64)
-    //         .into_styled(PrimitiveStyle::with_fill(Rgb565::RED));
-    //     circle.draw(cx.local.display).unwrap();
-    // }
-
     #[task(binds = GPIOTE, local = [gpiote], priority = 5)]
     fn on_gpiote(cx: on_gpiote::Context) {
         cx.local.gpiote.reset_events();
@@ -272,22 +256,53 @@ mod app {
         let soil = cx.local.soil;
         let display = cx.local.display;
 
-        let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
+        let soil_moisture = soil.soil_moisture_percentage().unwrap();
+        let THRESHOLD = 50;
+
+        let style = MonoTextStyleBuilder::new()
             .font(&PROFONT_24_POINT)
             .text_color(Rgb565::WHITE)
             .background_color(Rgb565::BLACK)
             .build();
 
-        write!(
-            string,
-            "Soil {}% ",
-            soil.soil_moisture_percentage().unwrap()
-        )
-        .unwrap();
+        write!(string, " Soil {}% ", soil_moisture).unwrap();
 
-        embedded_graphics::text::Text::new(string.as_str(), Point::new(100, 50), style)
+        // let display_area = display.bounding_box();
+        let display_area = Rectangle::new(Point::new(80, 0), Size::new(240, 240));
+
+        let title_text = Text::new("PWAT 5000", Point::zero(), style);
+        let soil_text = Text::new(
+            string.as_str(),
+            Point::zero(),
+            if soil_moisture > THRESHOLD {
+                MonoTextStyleBuilder::new()
+                    .font(&PROFONT_24_POINT)
+                    .text_color(Rgb565::GREEN)
+                    .background_color(Rgb565::BLACK)
+                    .build()
+            } else {
+                MonoTextStyleBuilder::new()
+                    .font(&PROFONT_24_POINT)
+                    .text_color(Rgb565::RED)
+                    .background_color(Rgb565::BLACK)
+                    .build()
+            },
+        );
+        // TODO: motor status
+        // The layout
+        LinearLayout::vertical(Chain::new(title_text).append(soil_text))
+            .with_alignment(horizontal::Center)
+            .arrange()
+            .align_to(&display_area, horizontal::Center, vertical::Center)
             .draw(display)
             .unwrap();
+
+        // let bmp_data = include_bytes!("../images/rust-social.bmp");
+        // // Parse the BMP file.
+        // let bmp = Bmp::from_slice(bmp_data).unwrap();
+        // // Draw the image with the top left corner at (10, 20) by wrapping it in
+        // // an embedded-graphics `Image`.
+        // Image::new(&bmp, Point::new(100, 50)).draw(display).unwrap();
 
         string.clear();
 
