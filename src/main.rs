@@ -193,27 +193,34 @@ mod app {
     #[task(binds = GPIOTE, local = [gpiote], priority = 5)]
     fn on_gpiote(cx: on_gpiote::Context) {
         cx.local.gpiote.reset_events();
-        motor::spawn().unwrap();
+        // motor::spawn().unwrap();
     }
 
-    #[task(local = [motor, state: bool = false], priority = 3)]
-    fn motor(cx: motor::Context) {
-        let on = *cx.local.state;
-        if on {
-            cx.local.motor.on()
-        } else {
-            cx.local.motor.off()
-        }
-        *cx.local.state = !on;
-    }
+    // #[task(local = [motor, state: bool = false], priority = 3)]
+    // fn motor(cx: motor::Context) {
+    //     let on = *cx.local.state;
+    //     if on {
+    //         cx.local.motor.on()
+    //     } else {
+    //         cx.local.motor.off()
+    //     }
+    //     *cx.local.state = !on;
+    // }
 
-    #[task(local = [soil, display, string: String<32> = String::new()])]
+    #[task(local = [soil, motor, display, string: String<32> = String::new()])]
     fn soil_measure(cx: soil_measure::Context) {
         let string = cx.local.string;
         let soil = cx.local.soil;
+        let motor = cx.local.motor;
         let display = cx.local.display;
 
         let soil_moisture = soil.soil_moisture_percentage().unwrap();
+
+        if soil_moisture < MOISTURE_THRESHOLD {
+            motor.on();
+        } else {
+            motor.off();
+        }
 
         let style = MonoTextStyleBuilder::new()
             .font(&PROFONT_24_POINT)
@@ -261,7 +268,7 @@ mod app {
 
         string.clear();
 
-        soil_measure::spawn_after(2.secs()).unwrap();
+        soil_measure::spawn_after(500.millis()).unwrap();
     }
 
     #[idle(local = [usb_serial_device, white_led])]
@@ -279,30 +286,11 @@ mod app {
                 cx.local.white_led.on();
             } else if &chars[..] == b"off" {
                 cx.local.white_led.off();
-            } else {
-                // let mut string: String<64> = String::new();
-                // chars
-                //     .iter()
-                //     .for_each(|value| string.push(*value as char).unwrap());
-
-                // cx.local.display.clear(Rgb565::BLACK).unwrap();
-
-                // let style = embedded_graphics::mono_font::MonoTextStyleBuilder::new()
-                //     .font(&FONT_10X20)
-                //     .text_color(Rgb565::WHITE)
-                //     .build();
-
-                // embedded_graphics::text::Text::new(string.as_str(), Point::new(15, 15), style)
-                //     .draw(cx.local.display)
-                //     .unwrap();
             }
 
             chars.clear();
         }
     }
-
-    // #[task]
-    // fn render_text(cx: render_text::Context) {}
 
     // TODO: interrupt on usb
     // https://github.com/Jarrod-Bennett/rust-nrf52-bluetooth/blob/cda7d9cb181e3dbf6e3afb1c27427a0ece20cbb0/src/main.rs
