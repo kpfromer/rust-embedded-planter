@@ -23,7 +23,6 @@ use heapless::{String, Vec};
 
 use nrf52840_hal as _;
 
-use prelude::AppError;
 use rtic::app;
 
 use dwt_systick_monotonic::DwtSystick;
@@ -43,6 +42,7 @@ use embedded_graphics::{
 };
 use embedded_layout::layout::linear::LinearLayout;
 use embedded_layout::prelude::*;
+use st7789::BacklightState;
 use tinybmp::Bmp;
 
 use st7789::ST7789;
@@ -57,28 +57,76 @@ use core::fmt::Write;
 use led::Led;
 use usb_serial::UsbSerialDevice;
 
+use crate::soil::Soil;
+
 type Display = ST7789<
     SPIInterfaceNoCS<Spim<SPIM0>, P0_13<Output<PushPull>>>,
     P1_03<Output<PushPull>>,
     P1_05<Output<PushPull>>,
 >;
 
+pub struct DisplayDevice<T> {
+    timer: Timer<T>,
+    is_on: bool,
+    display: Display,
+}
+
+impl<T> DisplayDevice<T>
+where
+    T: nrf52840_hal::timer::Instance,
+{
+    pub fn new(mut display: Display, mut timer: Timer<T>) -> DisplayDevice<T> {
+        display
+            .set_backlight(BacklightState::On, &mut timer)
+            .unwrap();
+        DisplayDevice {
+            display,
+            is_on: true,
+            timer,
+        }
+    }
+
+    #[inline]
+    pub fn on(&mut self) {
+        self.display
+            .set_backlight(st7789::BacklightState::On, &mut self.timer)
+            .unwrap();
+        self.is_on = true;
+    }
+
+    #[inline]
+    pub fn off(&mut self) {
+        self.display
+            .set_backlight(st7789::BacklightState::Off, &mut self.timer)
+            .unwrap();
+        self.is_on = false;
+    }
+
+    #[inline]
+    pub fn toggle(&mut self) {
+        if self.is_on {
+            self.off()
+        } else {
+            self.on()
+        }
+    }
+}
+
 const MOISTURE_THRESHOLD: u8 = 50;
 
 #[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3, SPIM3, SPIM2_SPIS2_SPI2])]
 mod app {
 
-    use crate::soil::Soil;
-
     use super::*;
 
     #[shared]
-    struct Shared {}
+    struct Shared {
+        display_device: DisplayDevice<nrf52840_hal::pac::TIMER1>,
+    }
 
     #[local]
     struct Local {
         white_led: Led,
-        display: Display,
         usb_serial_device: UsbSerialDevice<'static, Usbd<UsbPeripheral<'static>>>,
         soil: Soil,
         motor: Led,
@@ -159,6 +207,7 @@ mod app {
             // .set_orientation(st7789::Orientation::Landscape)
             .unwrap();
         display.clear(Rgb565::BLACK).unwrap();
+        let display_device = DisplayDevice::new(display, Timer::new(cx.device.TIMER1));
 
         let usb_bus = cx.local.usb_bus;
         usb_bus.replace(UsbBusAllocator::new(Usbd::new(UsbPeripheral::new(
@@ -177,10 +226,9 @@ mod app {
         soil_measure::spawn().unwrap();
 
         (
-            Shared {},
+            Shared { display_device },
             Local {
                 white_led,
-                display,
                 usb_serial_device,
                 soil,
                 motor,
@@ -193,13 +241,19 @@ mod app {
     #[task(binds = GPIOTE, local = [gpiote], priority = 5)]
     fn on_gpiote(cx: on_gpiote::Context) {
         cx.local.gpiote.reset_events();
-        // motor::spawn().unwrap();
+        toggle_display::spawn().unwrap();
     }
 
-    #[task(local=[display, string: String<32> = String::new()], priority = 4)]
-    fn render(cx: render::Context, soil_moisture: u8) {
+    #[task(shared=[display_device], priority = 4)]
+    fn toggle_display(mut cx: toggle_display::Context) {
+        cx.shared
+            .display_device
+            .lock(|display_device| display_device.toggle());
+    }
+
+    #[task(local=[string: String<32> = String::new()], shared = [display_device], priority = 4)]
+    fn render(mut cx: render::Context, soil_moisture: u8) {
         let string = cx.local.string;
-        let display = cx.local.display;
 
         let style = MonoTextStyleBuilder::new()
             .font(&PROFONT_24_POINT)
@@ -230,13 +284,18 @@ mod app {
             },
         );
         // TODO: motor status
-        // The layout
-        LinearLayout::vertical(Chain::new(title_text).append(soil_text))
-            .with_alignment(horizontal::Center)
-            .arrange()
-            .align_to(&display_area, horizontal::Center, vertical::Center)
-            .draw(display)
-            .unwrap();
+
+        cx.shared.display_device.lock(|display_device| {
+            if display_device.is_on {
+                // The layout
+                LinearLayout::vertical(Chain::new(title_text).append(soil_text))
+                    .with_alignment(horizontal::Center)
+                    .arrange()
+                    .align_to(&display_area, horizontal::Center, vertical::Center)
+                    .draw(&mut display_device.display)
+                    .unwrap();
+            }
+        });
 
         // let bmp_data = include_bytes!("../images/rust-social.bmp");
         // // Parse the BMP file.
@@ -285,10 +344,12 @@ mod app {
                 chars.clear();
             }
 
-            if &chars[..] == b"on" {
-                cx.local.white_led.on();
-            } else if &chars[..] == b"off" {
-                cx.local.white_led.off();
+            match &chars[..] {
+                b"on" => cx.local.white_led.on(),
+                b"off" => cx.local.white_led.off(),
+                b"motor" => motor::spawn(true).unwrap(),
+                b"display" => toggle_display::spawn().unwrap(),
+                _ => {}
             }
 
             chars.clear();
