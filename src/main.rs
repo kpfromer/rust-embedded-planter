@@ -4,7 +4,7 @@
 pub mod error;
 pub mod led;
 pub mod soil;
-// pub mod usb_serial;
+pub mod usb_serial;
 
 pub mod prelude {
     pub use crate::error::*;
@@ -49,15 +49,13 @@ use st7789::ST7789;
 
 use nrf52840_hal::usbd::{UsbPeripheral, Usbd};
 use usb_device::bus::UsbBusAllocator;
-use usb_device::device::{UsbDeviceBuilder, UsbVidPid};
-use usb_device::prelude::UsbDevice;
-use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 use profont::PROFONT_24_POINT;
 
 use core::fmt::Write;
 
 use led::Led;
+use usb_serial::UsbSerialDevice;
 
 type Display = ST7789<
     SPIInterfaceNoCS<Spim<SPIM0>, P0_13<Output<PushPull>>>,
@@ -65,36 +63,7 @@ type Display = ST7789<
     P1_05<Output<PushPull>>,
 >;
 
-#[inline]
-fn read_line<'a>(
-    usb_dev: &mut UsbDevice<'a, Usbd<UsbPeripheral<'a>>>,
-    serial: &mut SerialPort<'a, Usbd<UsbPeripheral<'a>>>,
-    chars: &mut Vec<u8, 64>,
-) -> Result<(), AppError> {
-    chars.clear();
-
-    loop {
-        if !usb_dev.poll(&mut [serial]) {
-            continue;
-        }
-
-        let mut buf = [0u8; 1];
-
-        match serial.read(&mut buf) {
-            Ok(count) if count > 0 => {
-                // If enter is entered
-                if buf[0] == b'\n' || buf[0] == b'\r' {
-                    break;
-                } else {
-                    chars.push(buf[0]).map_err(|_| AppError::UsbSerialError)?;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
+const MOISTURE_THRESHOLD: u8 = 50;
 
 #[app(device = nrf52840_hal::pac, peripherals = true, dispatchers = [PWM3, SPIM3])]
 mod app {
@@ -110,8 +79,7 @@ mod app {
     struct Local {
         white_led: Led,
         display: Display,
-        serial: SerialPort<'static, Usbd<UsbPeripheral<'static>>>,
-        usb_dev: UsbDevice<'static, Usbd<UsbPeripheral<'static>>>,
+        usb_serial_device: UsbSerialDevice<'static, Usbd<UsbPeripheral<'static>>>,
         soil: Soil,
         motor: Led,
         gpiote: Gpiote,
@@ -198,23 +166,13 @@ mod app {
             clocks.as_ref().unwrap(),
         ))));
 
-        let serial = SerialPort::new(usb_bus.as_ref().unwrap());
-        let usb_dev = UsbDeviceBuilder::new(usb_bus.as_ref().unwrap(), UsbVidPid(0x16c0, 0x27dd))
-            .manufacturer("Fake company")
-            .product("Serial port")
-            .serial_number("TEST")
-            .device_class(USB_CLASS_CDC)
-            .max_packet_size_0(64) // (makes control transfers 8x faster)
-            .build();
+        let usb_serial_device = UsbSerialDevice::new(usb_bus.as_ref().unwrap());
 
         // GPIO interrupts
         let btn = port1.p1_02.into_pullup_input().degrade();
         let gpiote = Gpiote::new(cx.device.GPIOTE);
         gpiote.port().input_pin(&btn).low();
         gpiote.port().enable_interrupt();
-
-        // blink::spawn_after(1.secs()).unwrap();
-        // render::spawn_after(2.secs()).unwrap();
 
         soil_measure::spawn().unwrap();
 
@@ -223,8 +181,7 @@ mod app {
             Local {
                 white_led,
                 display,
-                usb_dev,
-                serial,
+                usb_serial_device,
                 soil,
                 motor,
                 gpiote,
@@ -257,7 +214,6 @@ mod app {
         let display = cx.local.display;
 
         let soil_moisture = soil.soil_moisture_percentage().unwrap();
-        let THRESHOLD = 50;
 
         let style = MonoTextStyleBuilder::new()
             .font(&PROFONT_24_POINT)
@@ -267,14 +223,13 @@ mod app {
 
         write!(string, " Soil {}% ", soil_moisture).unwrap();
 
-        // let display_area = display.bounding_box();
         let display_area = Rectangle::new(Point::new(80, 0), Size::new(240, 240));
 
         let title_text = Text::new("PWAT 5000", Point::zero(), style);
         let soil_text = Text::new(
             string.as_str(),
             Point::zero(),
-            if soil_moisture > THRESHOLD {
+            if soil_moisture > MOISTURE_THRESHOLD {
                 MonoTextStyleBuilder::new()
                     .font(&PROFONT_24_POINT)
                     .text_color(Rgb565::GREEN)
@@ -309,15 +264,14 @@ mod app {
         soil_measure::spawn_after(2.secs()).unwrap();
     }
 
-    #[idle(local = [usb_dev, serial, white_led])]
+    #[idle(local = [usb_serial_device, white_led])]
     fn idle(cx: idle::Context) -> ! {
-        let usb_dev = cx.local.usb_dev;
-        let serial = cx.local.serial;
+        let usb_serial_device = cx.local.usb_serial_device;
         let mut chars: Vec<u8, 64> = Vec::new();
 
         loop {
             // Read line and clear chars if there's an error
-            if read_line(usb_dev, serial, &mut chars).is_err() {
+            if usb_serial_device.read_line(&mut chars).is_err() {
                 chars.clear();
             }
 
