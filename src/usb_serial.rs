@@ -87,6 +87,33 @@ where
     //     Ok(())
     // }
 
+    // #[inline]
+    // pub fn read_line(&mut self, chars: &mut Vec<u8, 64>) -> Result<(), AppError> {
+    //     chars.clear();
+
+    //     loop {
+    //         if !self.usb_device.poll(&mut [&mut self.serial_port]) {
+    //             continue;
+    //         }
+
+    //         let mut buf = [0u8; 1];
+
+    //         match self.serial_port.read(&mut buf) {
+    //             Ok(count) if count > 0 => {
+    //                 // If enter is entered
+    //                 if buf[0] == b'\n' || buf[0] == b'\r' {
+    //                     break;
+    //                 } else {
+    //                     chars.push(buf[0]).map_err(|_| AppError::UsbSerialError)?;
+    //                 }
+    //             }
+    //             _ => {}
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
     #[inline]
     pub fn read_line(&mut self, chars: &mut Vec<u8, 64>) -> Result<(), AppError> {
         chars.clear();
@@ -105,6 +132,15 @@ where
                         break;
                     } else {
                         chars.push(buf[0]).map_err(|_| AppError::UsbSerialError)?;
+
+                        // Write back characters
+                        let mut write_offset = 0;
+                        while write_offset < count {
+                            match self.serial_port.write(&buf[..]) {
+                                Ok(write_count) if write_count > 0 => write_offset += buf.len(),
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -113,6 +149,32 @@ where
 
         Ok(())
     }
+
+    #[inline]
+    pub fn write_chars(&mut self, chars: &[u8]) -> Result<(), AppError> {
+        // wait for ability to write
+        while !self.usb_device.poll(&mut [&mut self.serial_port]) {}
+
+        let mut position = 0;
+        while position < chars.len() {
+            match self.serial_port.write(&chars[position..]) {
+                Ok(count) if count > 0 => {
+                    position += count;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    // #[inline]
+    // pub fn wait_for_input(&mut self) -> Result<(), AppError> {
+    //     // wait for read or write
+    //     while !self.usb_device.poll(&mut [&mut self.serial_port]) {}
+
+    //     Ok(())
+    // }
 }
 
 impl From<UsbError> for AppError {

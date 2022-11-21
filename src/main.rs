@@ -1,8 +1,10 @@
 #![no_main]
 #![no_std]
 
+pub mod display;
 pub mod error;
 pub mod led;
+pub mod panic;
 pub mod soil;
 pub mod usb_serial;
 
@@ -10,12 +12,6 @@ pub mod prelude {
     pub use crate::error::*;
 }
 
-use hal::gpio::p0::P0_13;
-use hal::gpio::p1::P1_03;
-use hal::gpio::p1::P1_05;
-use hal::gpio::Output;
-use hal::gpio::PushPull;
-use hal::pac::SPIM0;
 use hal::Spim;
 use hal::Timer;
 
@@ -38,12 +34,10 @@ use nrf52840_hal::Clocks;
 use display_interface_spi::SPIInterfaceNoCS;
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_graphics::{
-    image::Image, mono_font::MonoTextStyleBuilder, prelude::*, primitives::Rectangle, text::Text,
+    mono_font::MonoTextStyleBuilder, prelude::*, primitives::Rectangle, text::Text,
 };
 use embedded_layout::layout::linear::LinearLayout;
 use embedded_layout::prelude::*;
-use st7789::BacklightState;
-use tinybmp::Bmp;
 
 use st7789::ST7789;
 
@@ -54,63 +48,10 @@ use profont::PROFONT_24_POINT;
 
 use core::fmt::Write;
 
+use display::DisplayDevice;
 use led::Led;
+use soil::Soil;
 use usb_serial::UsbSerialDevice;
-
-use crate::soil::Soil;
-
-type Display = ST7789<
-    SPIInterfaceNoCS<Spim<SPIM0>, P0_13<Output<PushPull>>>,
-    P1_03<Output<PushPull>>,
-    P1_05<Output<PushPull>>,
->;
-
-pub struct DisplayDevice<T> {
-    timer: Timer<T>,
-    is_on: bool,
-    display: Display,
-}
-
-impl<T> DisplayDevice<T>
-where
-    T: nrf52840_hal::timer::Instance,
-{
-    pub fn new(mut display: Display, mut timer: Timer<T>) -> DisplayDevice<T> {
-        display
-            .set_backlight(BacklightState::On, &mut timer)
-            .unwrap();
-        DisplayDevice {
-            display,
-            is_on: true,
-            timer,
-        }
-    }
-
-    #[inline]
-    pub fn on(&mut self) {
-        self.display
-            .set_backlight(st7789::BacklightState::On, &mut self.timer)
-            .unwrap();
-        self.is_on = true;
-    }
-
-    #[inline]
-    pub fn off(&mut self) {
-        self.display
-            .set_backlight(st7789::BacklightState::Off, &mut self.timer)
-            .unwrap();
-        self.is_on = false;
-    }
-
-    #[inline]
-    pub fn toggle(&mut self) {
-        if self.is_on {
-            self.off()
-        } else {
-            self.on()
-        }
-    }
-}
 
 const MOISTURE_THRESHOLD: u8 = 50;
 
@@ -251,44 +192,69 @@ mod app {
             .lock(|display_device| display_device.toggle());
     }
 
-    #[task(local=[string: String<32> = String::new()], shared = [display_device], priority = 4)]
+    #[task(local=[soil_string: String<10> = String::new()], shared = [display_device], priority = 4)]
     fn render(mut cx: render::Context, soil_moisture: u8) {
-        let string = cx.local.string;
+        let mut skip = false;
+        cx.shared.display_device.lock(|display_device| {
+            if !display_device.is_on {
+                skip = true
+            }
+        });
+        if skip {
+            return;
+        }
 
-        let style = MonoTextStyleBuilder::new()
-            .font(&PROFONT_24_POINT)
-            .text_color(Rgb565::WHITE)
-            .background_color(Rgb565::BLACK)
-            .build();
+        let is_motor_on = soil_moisture < MOISTURE_THRESHOLD;
 
-        write!(string, " Soil {}% ", soil_moisture).unwrap();
+        let soil_string = cx.local.soil_string;
+        write!(soil_string, " Soil {}% ", soil_moisture).unwrap();
+        let motor_str = if is_motor_on {
+            " Motor On "
+        } else {
+            " Motor Off "
+        };
 
         let display_area = Rectangle::new(Point::new(80, 0), Size::new(240, 240));
-
-        let title_text = Text::new("PWAT 5000", Point::zero(), style);
-        let soil_text = Text::new(
-            string.as_str(),
+        let title_text = Text::new(
+            "PWAT 5000",
             Point::zero(),
-            if soil_moisture > MOISTURE_THRESHOLD {
-                MonoTextStyleBuilder::new()
-                    .font(&PROFONT_24_POINT)
-                    .text_color(Rgb565::GREEN)
-                    .background_color(Rgb565::BLACK)
-                    .build()
-            } else {
-                MonoTextStyleBuilder::new()
-                    .font(&PROFONT_24_POINT)
-                    .text_color(Rgb565::RED)
-                    .background_color(Rgb565::BLACK)
-                    .build()
-            },
+            MonoTextStyleBuilder::new()
+                .font(&PROFONT_24_POINT)
+                .text_color(Rgb565::WHITE)
+                .background_color(Rgb565::BLACK)
+                .build(),
         );
-        // TODO: motor status
+        let soil_text = Text::new(
+            soil_string.as_str(),
+            Point::zero(),
+            MonoTextStyleBuilder::new()
+                .font(&PROFONT_24_POINT)
+                .text_color(if is_motor_on {
+                    Rgb565::RED
+                } else {
+                    Rgb565::GREEN
+                })
+                .background_color(Rgb565::BLACK)
+                .build(),
+        );
+        let motor_text = Text::new(
+            motor_str,
+            Point::zero(),
+            MonoTextStyleBuilder::new()
+                .font(&PROFONT_24_POINT)
+                .text_color(if is_motor_on {
+                    Rgb565::GREEN
+                } else {
+                    Rgb565::RED
+                })
+                .background_color(Rgb565::BLACK)
+                .build(),
+        );
 
         cx.shared.display_device.lock(|display_device| {
             if display_device.is_on {
                 // The layout
-                LinearLayout::vertical(Chain::new(title_text).append(soil_text))
+                LinearLayout::vertical(Chain::new(title_text).append(soil_text).append(motor_text))
                     .with_alignment(horizontal::Center)
                     .arrange()
                     .align_to(&display_area, horizontal::Center, vertical::Center)
@@ -304,7 +270,7 @@ mod app {
         // // an embedded-graphics `Image`.
         // Image::new(&bmp, Point::new(100, 50)).draw(display).unwrap();
 
-        string.clear();
+        soil_string.clear();
     }
 
     #[task(local = [motor], priority = 3)]
@@ -337,11 +303,21 @@ mod app {
     fn idle(cx: idle::Context) -> ! {
         let usb_serial_device = cx.local.usb_serial_device;
         let mut chars: Vec<u8, 64> = Vec::new();
+        let prompt = b"Enter command: ";
+
+        let clear_screen = |usb_serial_device: &mut UsbSerialDevice<Usbd<UsbPeripheral>>| {
+            let mut chars: Vec<u8, 8> = Vec::new();
+            write!(chars, "{}[2J", 27 as char).unwrap();
+            usb_serial_device.write_chars(&chars).unwrap();
+        };
 
         loop {
+            usb_serial_device.write_chars(&prompt[..]).unwrap();
+
             // Read line and clear chars if there's an error
             if usb_serial_device.read_line(&mut chars).is_err() {
                 chars.clear();
+                continue;
             }
 
             match &chars[..] {
@@ -352,29 +328,12 @@ mod app {
                 _ => {}
             }
 
+            // Clear input
             chars.clear();
+            clear_screen(usb_serial_device);
         }
     }
 
     // TODO: interrupt on usb
     // https://github.com/Jarrod-Bennett/rust-nrf52-bluetooth/blob/cda7d9cb181e3dbf6e3afb1c27427a0ece20cbb0/src/main.rs
-}
-
-#[panic_handler] // panicking behavior
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    let device = unsafe { hal::pac::Peripherals::steal() };
-
-    let port0 = hal::gpio::p0::Parts::new(device.P0);
-    let port1 = hal::gpio::p1::Parts::new(device.P1);
-
-    let mut motor = Led::new(port0.p0_03.degrade());
-    let mut red_led = Led::new(port1.p1_01.degrade());
-
-    // MAKE SURE TO TURN OFF MOTOR IF ANYTHING GOES WRONG
-    motor.off();
-    red_led.on();
-
-    loop {
-        cortex_m::asm::nop();
-    }
 }
